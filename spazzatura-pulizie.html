@@ -99,7 +99,7 @@
       getNames(){
         const raw = localStorage.getItem('names');
         if(raw){
-          try { return JSON.parse(raw);} catch{ /*fallthrough*/ }
+          try { return JSON.parse(raw);} catch{}
         }
         return ["Barbagallo","Cosoleto","Presti"]; // default
       },
@@ -109,7 +109,21 @@
         if(!raw) return []; // array of {date: 'YYYY-MM-DD', delta: +1}
         try { return JSON.parse(raw);} catch{ return []; }
       },
-      setShifts(arr){ localStorage.setItem('trashShifts', JSON.stringify(arr)); }
+      setShifts(arr){ localStorage.setItem('trashShifts', JSON.stringify(arr)); },
+
+      // ★ nuovi ancoraggi (setup iniziale richiesto)
+      getKitchenAnchor(){ // {name, weekISO}
+        const raw = localStorage.getItem('kitchenAnchor');
+        if(!raw) return null;
+        try { return JSON.parse(raw);} catch{ return null; }
+      },
+      setKitchenAnchor(obj){ localStorage.setItem('kitchenAnchor', JSON.stringify(obj)); },
+
+      getTrashBaseShift(){ // intero 0..n-1 per allineare ieri=Cosoleto
+        const v = localStorage.getItem('trashBaseShift');
+        return v==null ? null : parseInt(v,10);
+      },
+      setTrashBaseShift(k){ localStorage.setItem('trashBaseShift', String(k)); },
     };
 
     // ====== Date & Week utilities ======
@@ -119,17 +133,18 @@
     function startOfISOWeek(d){
       const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
       const day = date.getUTCDay() || 7; // Sunday:7
-      if(day !== 1) date.setUTCDate(date.getUTCDate() - (day - 1));
+      if(day !== 1) date.setUTCDate(date.getUTCDay ? date.getUTCDate() - (day - 1) : date.getUTCDate());
+      else date.setUTCDate(date.getUTCDate());
       return new Date(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
     }
     function isoWeekNumber(d){
       const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-      // Set to Thursday in current week
       date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay()||7));
       const yearStart = new Date(Date.UTC(date.getUTCFullYear(),0,1));
       const weekNo = Math.ceil((((date - yearStart)/86400000) + 1)/7);
       return {year: date.getUTCFullYear(), week: weekNo};
     }
+    function isoWeekId(d){ const {year,week}=isoWeekNumber(d); return `${year}-W${pad(week)}`; } // ★
 
     // ====== Business rules ======
     const WASTE_BY_DOW = { // 1=Mon ... 7=Sun
@@ -148,35 +163,76 @@
       return unique;
     }
 
-    // Kitchen: assign two distinct people per week (Mon, Wed) rotating by week index
+    // ★ KITCHEN: rotazione alfabetica con ancoraggio "la settimana scorsa Cosoleto ha fatto"
     function kitchenForWeek(refDate){
       const names = normalizedNames();
       if(names.length===0) return {mon:'—', wed:'—'};
-      const {week} = isoWeekNumber(refDate);
-      const baseIndex = (week - 1) % names.length; // stable rotation
-      const monIdx = (baseIndex*2) % names.length;
-      const wedIdx = (baseIndex*2 + 1) % names.length;
-      const mon = names[monIdx];
-      const wed = names.length>1 ? names[wedIdx] : names[monIdx];
+
+      // recupera o crea l'anchor (settimana scorsa, Cosoleto ultimo assegnato)
+      let anchor = store.getKitchenAnchor();
+      const today = new Date();
+      if(!anchor){
+        const lastWeekRef = new Date(today); lastWeekRef.setDate(lastWeekRef.getDate()-7);
+        anchor = { name: 'Cosoleto', weekISO: isoWeekId(lastWeekRef) };
+        store.setKitchenAnchor(anchor);
+      }
+
+      const weekStart = startOfISOWeek(refDate);
+      // quante settimane tra anchor e ref
+      const anchorWeekDate = (()=>{
+        // prendi il lunedì della settimana del riferimento "anchor.weekISO"
+        const [y,w] = anchor.weekISO.split('-W').map(x=>parseInt(x,10));
+        // trova il giovedì della settimana ISO
+        const jan4 = new Date(Date.UTC(y,0,4));
+        const dayOfWeek = jan4.getUTCDay() || 7;
+        const monday = new Date(Date.UTC(y,0,4 - (dayOfWeek - 1) + (w-1)*7));
+        return new Date(monday.getUTCFullYear(), monday.getUTCMonth(), monday.getUTCDate());
+      })();
+      const weeksSince = Math.floor((weekStart - anchorWeekDate) / (7*24*60*60*1000));
+
+      const n = names.length;
+      const anchorIdx = Math.max(0, names.findIndex(x => x.toLowerCase() === anchor.name.toLowerCase()));
+      const startIdx = (anchorIdx + 1 + (weeksSince*2)) % n; // dopo l'ultimo, e 2 posti per settimana
+      const mon = names[startIdx];
+      const wed = names[(startIdx + 1) % n];
       return {mon, wed};
     }
 
-    // Trash: daily rotation by alphabetical order + cumulative shifts from marked misses
+    // TRASH: rotazione alfabetica giornaliera + shift + baseShift per allineare "ieri=Cosoleto"
     function cumulativeShiftUpTo(dateStr){
       const shifts = store.getShifts();
-      // Sum deltas with shift.startDate <= dateStr
       return shifts.filter(s=> s.date <= dateStr).reduce((a,s)=> a + (s.delta||0), 0);
+    }
+
+    // ★ calcolo indice base (lun=names[0], mar=names[1], ...)
+    function weekdayBaseIdx(date, n){
+      const weekStart = startOfISOWeek(date);
+      const dayIndex = Math.floor((new Date(date.getFullYear(),date.getMonth(),date.getDate()) - new Date(weekStart.getFullYear(),weekStart.getMonth(),weekStart.getDate()))/86400000);
+      return dayIndex % n; // 0..6 -> 0..n-1
     }
 
     function trashPersonForDate(date){
       const names = normalizedNames();
       if(!names.length) return '—';
-      // base rotation from a fixed epoch (2025-01-01) to keep deterministic sequence
-      const epoch = new Date(2025,0,1);
-      const days = Math.floor((new Date(date.getFullYear(),date.getMonth(),date.getDate()) - new Date(epoch.getFullYear(),epoch.getMonth(),epoch.getDate()))/86400000);
-      const baseIdx = ((days % names.length) + names.length) % names.length;
+      const n = names.length;
+
+      // baseShift calcolato per imporre: "ieri = Cosoleto"
+      let baseShift = store.getTrashBaseShift();
+      if(baseShift == null){
+        // calcola e memorizza alla prima esecuzione
+        const yesterday = new Date(); yesterday.setDate(yesterday.getDate()-1);
+        const target = 'Cosoleto';
+        const targetIdx = Math.max(0, names.findIndex(x => x.toLowerCase() === target.toLowerCase()));
+        const baseIdxY = weekdayBaseIdx(yesterday, n);
+        const cumShiftY = cumulativeShiftUpTo(fmtDate(yesterday));
+        baseShift = (targetIdx - baseIdxY - cumShiftY) % n;
+        if(baseShift < 0) baseShift += n;
+        store.setTrashBaseShift(baseShift);
+      }
+
+      const baseIdx = weekdayBaseIdx(date, n);
       const shift = cumulativeShiftUpTo(fmtDate(date));
-      const idx = (baseIdx + shift) % names.length;
+      const idx = (baseIdx + baseShift + shift) % n;
       return names[idx];
     }
 
@@ -194,6 +250,8 @@
           const toDel = btn.getAttribute('data-rm');
           const arr = store.getNames().filter(x=> x.toLowerCase() !== toDel.toLowerCase());
           store.setNames(arr);
+          // ★ se si eliminano nomi, ricalibra il baseShift della spazzatura
+          localStorage.removeItem('trashBaseShift');
           renderAll();
         });
       });
@@ -266,7 +324,8 @@
     }
 
     function renderAll(){
-      const refDate = new Date(el('refDate').value || new Date());
+      let refDate = new Date(el('refDate').value || new Date());
+      if(isNaN(refDate)) refDate = new Date(); // ★ guardia
       renderNames();
       renderHeader(refDate);
       renderKitchen(refDate);
@@ -277,6 +336,18 @@
     function init(){
       // default names if empty
       if(!localStorage.getItem('names')){ store.setNames(["Barbagallo","Cosoleto","Presti"]); }
+
+      // ★ SETUP “ieri Cosoleto spazzatura” e “settimana scorsa Cosoleto pulizie”
+      // se non già settati, crea anchor e baseShift coerenti
+      if(!store.getKitchenAnchor()){
+        const lastWeekRef = new Date(); lastWeekRef.setDate(lastWeekRef.getDate()-7);
+        store.setKitchenAnchor({ name: 'Cosoleto', weekISO: isoWeekId(lastWeekRef) });
+      }
+      if(store.getTrashBaseShift()==null){
+        // forza il calcolo alla prima chiamata di trashPersonForDate
+        // (lasciamo null, sarà calcolato lazy in trashPersonForDate)
+      }
+
       // set reference date to today
       el('refDate').value = fmtDate(new Date());
 
@@ -288,12 +359,15 @@
         if(!arr.some(x=> x.toLowerCase()===v.toLowerCase())) arr.push(v);
         store.setNames(arr);
         inp.value='';
+        // ricalibra la spazzatura dopo modifiche nomi
+        localStorage.removeItem('trashBaseShift'); // ★
         renderAll();
       });
       el('newName').addEventListener('keydown',e=>{ if(e.key==='Enter') el('addName').click(); });
       el('resetDefault').addEventListener('click',()=>{
         if(confirm('Ripristinare i cognomi di base (Barbagallo, Cosoleto, Presti)?')){
           store.setNames(["Barbagallo","Cosoleto","Presti"]);
+          localStorage.removeItem('trashBaseShift'); // ★ ricalibra
           renderAll();
         }
       });
@@ -305,7 +379,8 @@
       el('refDate').addEventListener('change', renderAll);
       el('clearShifts').addEventListener('click',()=>{
         if(confirm('Cancellare tutti gli shift registrati per la spazzatura?')){
-          store.setShifts([]); renderAll();
+          store.setShifts([]);
+          renderAll();
         }
       });
 
