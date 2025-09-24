@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Turni Pulizie Cucina & Raccolta Differenziata</title>
+  <style>
+    :root { --bg:#0f172a; --card:#111827; --muted:#94a3b8; --text:#e5e7eb; --accent:#22d3ee; --danger:#f87171; --ok:#34d399; }
+    *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,"Helvetica Neue",sans-serif}
+    body{margin:0;background:linear-gradient(180deg,#0b1220,#0f172a 40%,#0b1220);color:var(--text)}
+    .app{max-width:1000px;margin:24px auto;padding:16px}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    .card{background:var(--card);border:1px solid #1f2937;border-radius:16px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    h1{font-size:clamp(22px,3.8vw,34px);margin:0 0 12px;letter-spacing:.2px}
+    h2{font-size:clamp(18px,3vw,24px);margin:0 0 10px;color:var(--accent)}
+    input,button,select{border-radius:10px;border:1px solid #233046;background:#0b1220;color:var(--text);padding:10px 12px}
+    button{cursor:pointer}
+    button.primary{background:linear-gradient(90deg,#06b6d4,#22d3ee);color:#001018;border:none;font-weight:700}
+    button.ghost{background:transparent}
+    button.danger{background:#1f0f13;border:1px solid #5b202a;color:#fecaca}
+    .pill{display:inline-flex;align-items:center;gap:8px;background:#0b1220;border:1px solid #22304a;border-radius:999px;padding:6px 10px;margin:4px 6px}
+    .pill b{letter-spacing:.3px}
+    .pill button{border:none;background:transparent;color:#fca5a5;font-size:16px}
+    .muted{color:var(--muted)}
+    .grid{display:grid;gap:12px}
+    .grid.cols-2{grid-template-columns:1fr}
+    @media(min-width:880px){.grid.cols-2{grid-template-columns:1fr 1fr}}
+    table{width:100%;border-collapse:separate;border-spacing:0 8px}
+    th,td{text-align:left;padding:10px 12px}
+    thead th{color:var(--muted);font-weight:600}
+    tbody tr{background:#0b1220;border:1px solid #233046}
+    tbody tr td:first-child{border-radius:10px 0 0 10px}
+    tbody tr td:last-child{border-radius:0 10px 10px 0}
+    .tag{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid #2a3b5f;color:#c7d2fe;background:#0b1220}
+    .ok{color:var(--ok)} .bad{color:var(--danger)}
+    .small{font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>Turni Pulizie Cucina & Raccolta Differenziata</h1>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div class="muted small">Settimana (ISO)</div>
+          <h2 id="weekLabel"></h2>
+        </div>
+        <div class="row">
+          <button id="prevWeek">◀︎ Settimana precedente</button>
+          <button id="todayWeek" class="ghost">Oggi</button>
+          <button id="nextWeek">Settimana successiva ▶︎</button>
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="muted">Data di riferimento: <input type="date" id="refDate"></label>
+      </div>
+    </div>
+
+    <div class="grid cols-2" style="margin-top:12px">
+
+      <!-- Gestione nomi -->
+      <div class="card">
+        <h2>Persone</h2>
+        <p class="muted small">Modifica l'elenco (ordinato alfabeticamente). Verrà usato sia per <b>pulizie cucina</b> sia per la <b>spazzatura</b>.</p>
+        <div class="row">
+          <input id="newName" placeholder="Aggiungi cognome…" />
+          <button id="addName" class="primary">Aggiungi</button>
+          <button id="resetDefault" title="Ripristina elenco di base">Ripristina</button>
+        </div>
+        <div id="nameList" style="margin-top:8px"></div>
+      </div>
+
+      <!-- Pulizie cucina -->
+      <div class="card">
+        <h2>Pulizie cucina (Lunedì e Mercoledì)</h2>
+        <p class="muted small">Rotazione settimanale su ordine alfabetico. Ogni settimana assegna due persone: lunedì e mercoledì (senza ripetizioni finché possibile).</p>
+        <div id="kitchenAssignments"></div>
+      </div>
+
+      <!-- Spazzatura -->
+      <div class="card" style="grid-column:1/-1">
+        <div class="row" style="justify-content:space-between;align-items:baseline">
+          <h2>Raccolta differenziata – Turni giornalieri</h2>
+          <div class="row">
+            <button id="clearShifts" class="danger" title="Cancella tutti gli shift registrati">Azzera shift</button>
+          </div>
+        </div>
+        <p class="muted small">Ordine alfabetico a rotazione <b>ogni giorno</b>. Tipologie: <span class="tag">Umido: Lunedì/Giovedì/Sabato</span> <span class="tag">Carta: Martedì</span> <span class="tag">Indifferenziato: Mercoledì</span> <span class="tag">Plastica: Venerdì</span> <span class="tag">Domenica: —</span></p>
+        <div id="trashTableWrap"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    // ====== Storage helpers ======
+    const store = {
+      getNames(){
+        const raw = localStorage.getItem('names');
+        if(raw){
+          try { return JSON.parse(raw);} catch{ /*fallthrough*/ }
+        }
+        return ["Barbagallo","Cosoleto","Presti"]; // default
+      },
+      setNames(arr){ localStorage.setItem('names', JSON.stringify(arr)); },
+      getShifts(){
+        const raw = localStorage.getItem('trashShifts');
+        if(!raw) return []; // array of {date: 'YYYY-MM-DD', delta: +1}
+        try { return JSON.parse(raw);} catch{ return []; }
+      },
+      setShifts(arr){ localStorage.setItem('trashShifts', JSON.stringify(arr)); }
+    };
+
+    // ====== Date & Week utilities ======
+    const pad = (n)=> String(n).padStart(2,'0');
+    const fmtDate = (d)=> `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+
+    function startOfISOWeek(d){
+      const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+      const day = date.getUTCDay() || 7; // Sunday:7
+      if(day !== 1) date.setUTCDate(date.getUTCDate() - (day - 1));
+      return new Date(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+    }
+    function isoWeekNumber(d){
+      const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+      // Set to Thursday in current week
+      date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay()||7));
+      const yearStart = new Date(Date.UTC(date.getUTCFullYear(),0,1));
+      const weekNo = Math.ceil((((date - yearStart)/86400000) + 1)/7);
+      return {year: date.getUTCFullYear(), week: weekNo};
+    }
+
+    // ====== Business rules ======
+    const WASTE_BY_DOW = { // 1=Mon ... 7=Sun
+      1: 'Umido',
+      2: 'Carta',
+      3: 'Indifferenziato',
+      4: 'Umido',
+      5: 'Plastica',
+      6: 'Umido',
+      7: '—'
+    };
+
+    function normalizedNames(){
+      const unique = Array.from(new Set(store.getNames().map(n=>n.trim()).filter(Boolean)));
+      unique.sort((a,b)=> a.localeCompare(b,'it',{sensitivity:'base'}));
+      return unique;
+    }
+
+    // Kitchen: assign two distinct people per week (Mon, Wed) rotating by week index
+    function kitchenForWeek(refDate){
+      const names = normalizedNames();
+      if(names.length===0) return {mon:'—', wed:'—'};
+      const {week} = isoWeekNumber(refDate);
+      const baseIndex = (week - 1) % names.length; // stable rotation
+      const monIdx = (baseIndex*2) % names.length;
+      const wedIdx = (baseIndex*2 + 1) % names.length;
+      const mon = names[monIdx];
+      const wed = names.length>1 ? names[wedIdx] : names[monIdx];
+      return {mon, wed};
+    }
+
+    // Trash: daily rotation by alphabetical order + cumulative shifts from marked misses
+    function cumulativeShiftUpTo(dateStr){
+      const shifts = store.getShifts();
+      // Sum deltas with shift.startDate <= dateStr
+      return shifts.filter(s=> s.date <= dateStr).reduce((a,s)=> a + (s.delta||0), 0);
+    }
+
+    function trashPersonForDate(date){
+      const names = normalizedNames();
+      if(!names.length) return '—';
+      // base rotation from a fixed epoch (2025-01-01) to keep deterministic sequence
+      const epoch = new Date(2025,0,1);
+      const days = Math.floor((new Date(date.getFullYear(),date.getMonth(),date.getDate()) - new Date(epoch.getFullYear(),epoch.getMonth(),epoch.getDate()))/86400000);
+      const baseIdx = ((days % names.length) + names.length) % names.length;
+      const shift = cumulativeShiftUpTo(fmtDate(date));
+      const idx = (baseIdx + shift) % names.length;
+      return names[idx];
+    }
+
+    // ====== Rendering ======
+    const el = (id)=> document.getElementById(id);
+
+    function renderNames(){
+      const box = el('nameList');
+      const names = normalizedNames();
+      store.setNames(names);
+      box.innerHTML = names.length ? names.map(n=>`<span class="pill"><b>${n}</b><button title="Rimuovi" data-rm="${n}">✕</button></span>`).join('') : '<span class="muted">Nessun nome</span>';
+      // wire remove
+      box.querySelectorAll('button[data-rm]').forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          const toDel = btn.getAttribute('data-rm');
+          const arr = store.getNames().filter(x=> x.toLowerCase() !== toDel.toLowerCase());
+          store.setNames(arr);
+          renderAll();
+        });
+      });
+    }
+
+    function renderKitchen(refDate){
+      const out = el('kitchenAssignments');
+      const {mon, wed} = kitchenForWeek(refDate);
+      const weekStart = startOfISOWeek(refDate);
+      const monDate = new Date(weekStart);
+      const wedDate = new Date(weekStart); wedDate.setDate(wedDate.getDate()+2);
+      out.innerHTML = `
+        <table>
+          <thead><tr><th>Giorno</th><th>Data</th><th>Assegnato</th></tr></thead>
+          <tbody>
+            <tr><td>Lunedì</td><td>${fmtDate(monDate)}</td><td><b>${mon}</b></td></tr>
+            <tr><td>Mercoledì</td><td>${fmtDate(wedDate)}</td><td><b>${wed}</b></td></tr>
+          </tbody>
+        </table>`;
+    }
+
+    function renderTrash(refDate){
+      const wrap = el('trashTableWrap');
+      const weekStart = startOfISOWeek(refDate);
+      const rows = [];
+      for(let i=0;i<7;i++){
+        const d = new Date(weekStart); d.setDate(d.getDate()+i);
+        const dateStr = fmtDate(d);
+        const dow = d.getDay() || 7; // 1..7
+        const waste = WASTE_BY_DOW[dow];
+        const who = trashPersonForDate(d);
+        const isToday = fmtDate(new Date()) === dateStr;
+        rows.push(`<tr>
+          <td>${['Lunedì','Martedì','Mercoledì','Giovedì','Venerdì','Sabato','Domenica'][i]} ${isToday?'<span class="tag">Oggi</span>':''}</td>
+          <td>${dateStr}</td>
+          <td>${waste}</td>
+          <td><b>${who}</b></td>
+          <td>
+            ${waste==='—' ? '<span class="muted small">Nessun ritiro</span>' : `<button data-shift="${dateStr}">Segna non fatto → shift</button>`}
+          </td>
+        </tr>`);
+      }
+      wrap.innerHTML = `
+        <table>
+          <thead>
+            <tr><th>Giorno</th><th>Data</th><th>Tipologia</th><th>Assegnato</th><th>Azioni</th></tr>
+          </thead>
+          <tbody>${rows.join('')}</tbody>
+        </table>
+        <p class="small muted">Lo <b>shift</b> sposta in avanti di una posizione l'ordine a partire dal giorno selezionato (compreso). Utile se qualcuno salta il turno: il suo nome slitta al giorno dopo.</p>
+      `;
+      // wire shift buttons
+      wrap.querySelectorAll('button[data-shift]').forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          const dateStr = btn.getAttribute('data-shift');
+          const shifts = store.getShifts();
+          shifts.push({date: dateStr, delta: 1});
+          store.setShifts(shifts);
+          renderAll();
+        });
+      });
+    }
+
+    function renderHeader(refDate){
+      const {year, week} = isoWeekNumber(refDate);
+      const sw = startOfISOWeek(refDate);
+      const ew = new Date(sw); ew.setDate(ew.getDate()+6);
+      el('weekLabel').textContent = `Settimana ${week} • ${fmtDate(sw)} → ${fmtDate(ew)} (anno ${year})`;
+      el('refDate').value = fmtDate(refDate);
+    }
+
+    function renderAll(){
+      const refDate = new Date(el('refDate').value || new Date());
+      renderNames();
+      renderHeader(refDate);
+      renderKitchen(refDate);
+      renderTrash(refDate);
+    }
+
+    // ====== Events & Init ======
+    function init(){
+      // default names if empty
+      if(!localStorage.getItem('names')){ store.setNames(["Barbagallo","Cosoleto","Presti"]); }
+      // set reference date to today
+      el('refDate').value = fmtDate(new Date());
+
+      el('addName').addEventListener('click',()=>{
+        const inp = el('newName');
+        const v = inp.value.trim();
+        if(!v) return;
+        const arr = store.getNames();
+        if(!arr.some(x=> x.toLowerCase()===v.toLowerCase())) arr.push(v);
+        store.setNames(arr);
+        inp.value='';
+        renderAll();
+      });
+      el('newName').addEventListener('keydown',e=>{ if(e.key==='Enter') el('addName').click(); });
+      el('resetDefault').addEventListener('click',()=>{
+        if(confirm('Ripristinare i cognomi di base (Barbagallo, Cosoleto, Presti)?')){
+          store.setNames(["Barbagallo","Cosoleto","Presti"]);
+          renderAll();
+        }
+      });
+
+      el('prevWeek').addEventListener('click',()=>{ const d=new Date(el('refDate').value); d.setDate(d.getDate()-7); el('refDate').value=fmtDate(d); renderAll(); });
+      el('nextWeek').addEventListener('click',()=>{ const d=new Date(el('refDate').value); d.setDate(d.getDate()+7); el('refDate').value=fmtDate(d); renderAll(); });
+      el('todayWeek').addEventListener('click',()=>{ el('refDate').value = fmtDate(new Date()); renderAll(); });
+
+      el('refDate').addEventListener('change', renderAll);
+      el('clearShifts').addEventListener('click',()=>{
+        if(confirm('Cancellare tutti gli shift registrati per la spazzatura?')){
+          store.setShifts([]); renderAll();
+        }
+      });
+
+      renderAll();
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>
